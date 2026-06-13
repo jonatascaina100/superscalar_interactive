@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Execução Superscalar — Dispatch e IPC</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d0f14;
+    --surface: #13161e;
+    --surface2: #1a1e29;
+    --border: rgba(255,255,255,0.07);
+    --border2: rgba(255,255,255,0.14);
+
+    --green: #00e87a;
+    --green-dim: #00e87a22;
+    --red: #ff4466;
+    --red-dim: #ff446622;
+    --amber: #ffaa00;
+    --amber-dim: #ffaa0022;
+    --blue: #4d9fff;
+    --blue-dim: #4d9fff22;
+    --purple: #b89cff;
+    --purple-dim: #b89cff22;
+
+    --text: #e8eaf0;
+    --muted: #6b7280;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'Syne', sans-serif;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 2rem;
+    background-image:
+      radial-gradient(ellipse 60% 40% at 15% 0%, #4d9fff0a 0%, transparent 60%),
+      radial-gradient(ellipse 50% 40% at 85% 90%, #00e87a08 0%, transparent 60%);
+  }
+
+  .wrap { max-width: 960px; margin: 0 auto; }
+
+  h1 {
+    font-size: 13px;
+    font-family: var(--mono);
+    color: var(--muted);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h1::before {
+    content: '';
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--blue);
+    box-shadow: 0 0 8px var(--blue);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .4 } }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 1.5rem; }
+  .tab {
+    font-family: var(--mono); font-size: 13px; font-weight: 600;
+    padding: 12px 22px; border-radius: 999px; border: 1px solid var(--border2);
+    background: var(--surface2); color: var(--muted); cursor: pointer;
+    transition: all .2s; letter-spacing: 0.02em;
+  }
+  .tab:hover { border-color: rgba(255,255,255,0.25); color: var(--text); }
+  .tab.active { background: var(--blue-dim); border-color: var(--blue); color: var(--blue); box-shadow: 0 0 18px var(--blue-dim); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 1.5rem; margin-bottom: 16px; }
+  .card-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 1rem; }
+  .card-note { font-size: 13px; color: var(--muted); line-height: 1.7; }
+
+  /* ===== DISPATCH LAYOUT ===== */
+  .dispatch-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; overflow: hidden; }
+  .panel-hdr {
+    padding: 12px 16px; font-family: var(--mono); font-size: 10px; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+    border-bottom: 1px solid var(--border); background: var(--surface2);
+  }
+  .panel-body { padding: 12px 14px; }
+
+  /* INSTRUCTION QUEUE */
+  .iq-list { display: flex; flex-direction: column; gap: 6px; }
+  .iq-item {
+    border-radius: 9px; padding: 9px 12px; border: 1px solid var(--border);
+    background: var(--surface2); font-family: var(--mono); font-size: 11.5px;
+    display: flex; justify-content: space-between; align-items: center;
+    transition: all .25s;
+  }
+  .iq-item.ready      { background: var(--green-dim); border-color: var(--green); }
+  .iq-item.blocked    { background: var(--red-dim);   border-color: var(--red); opacity: .85; }
+  .iq-item.dispatched { background: var(--blue-dim);  border-color: var(--blue); box-shadow: 0 0 12px var(--blue-dim); }
+  .iq-item.done       { opacity: .35; text-decoration: line-through; }
+  .iq-instr { color: var(--text); font-weight: 600; }
+  .iq-dep { font-size: 9px; color: var(--muted); }
+  .iq-status {
+    font-size: 9px; padding: 3px 9px; border-radius: 10px; font-family: var(--sans);
+    font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .status-ready      { background: var(--green-dim); color: var(--green); }
+  .status-blocked    { background: var(--red-dim);   color: var(--red); }
+  .status-dispatched { background: var(--blue-dim);  color: var(--blue); }
+
+  /* EXECUTION UNITS */
+  .eu-grid { display: flex; flex-direction: column; gap: 8px; }
+  .eu-row { display: flex; align-items: center; gap: 10px; }
+  .eu-label { font-family: var(--mono); font-size: 10px; color: var(--muted); width: 76px; flex-shrink: 0; text-align: right; }
+  .eu-slot {
+    border-radius: 9px; flex: 1; height: 38px; border: 1px solid var(--border);
+    background: var(--surface2); display: flex; align-items: center; padding: 0 12px;
+    font-family: var(--mono); font-size: 11.5px; transition: all .25s; color: var(--muted);
+  }
+  .eu-slot.busy { background: var(--amber-dim); border-color: var(--amber); color: var(--amber); box-shadow: 0 0 14px var(--amber-dim); font-weight: 700; }
+
+  /* STEP NODES */
+  .sn-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .sn { border-radius: 10px; padding: 10px 6px; text-align: center; border: 1px solid var(--border); background: var(--surface2); transition: all .25s; }
+  .sn.active { border-color: var(--blue); background: var(--blue-dim); box-shadow: 0 0 16px var(--blue-dim); transform: translateY(-2px); }
+  .sn.done { border-color: var(--green); background: var(--green-dim); }
+  .sn-n { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+  .sn.active .sn-n { color: var(--blue); }
+  .sn.done .sn-n { color: var(--green); }
+  .sn-name { font-size: 11px; font-weight: 700; color: var(--text); line-height: 1.3; }
+  .sn.active .sn-name { color: var(--blue); }
+  .sn.done .sn-name { color: var(--green); }
+  .sn-sub { font-family: var(--mono); font-size: 9px; color: var(--muted); margin-top: 3px; }
+
+  /* DETAIL */
+  .detail-box {
+    border-radius: 14px; padding: 18px 22px; font-size: 13.5px; line-height: 1.75;
+    border: 1px solid var(--border); background: var(--surface2); color: var(--muted);
+    min-height: 90px; transition: all .3s;
+  }
+  .detail-box.active { border-color: var(--blue); background: var(--blue-dim); box-shadow: 0 0 24px var(--blue-dim); color: #cfe4ff; }
+
+  /* STATS */
+  .stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .stat { background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .stat-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+  .stat-val { font-family: var(--mono); font-size: 20px; font-weight: 700; color: var(--text); transition: color .3s; }
+  .stat-val.good { color: var(--green); }
+  .stat-val.mid  { color: var(--amber); }
+
+  /* BUTTONS */
+  button {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    padding: 10px 18px; border-radius: 8px; border: 1px solid var(--border2);
+    background: var(--surface2); color: var(--text); cursor: pointer;
+    letter-spacing: 0.04em; transition: all .15s;
+  }
+  button:hover:not(:disabled) { background: #222738; border-color: rgba(255,255,255,0.25); transform: translateY(-1px); }
+  button:active:not(:disabled) { transform: translateY(0) scale(0.98); }
+  button:disabled { opacity: 0.35; cursor: default; }
+  .step-btn { background: var(--blue-dim); border-color: var(--blue); color: var(--blue); }
+  .step-btn:hover:not(:disabled) { background: #4d9fff33; box-shadow: 0 0 16px var(--blue-dim); }
+
+  .btn-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .cycle-counter {
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 20px; padding: 8px 16px; margin-left: auto;
+  }
+  .cycle-counter span { color: var(--green); font-weight: 700; }
+
+  /* DEPENDENCY CARDS */
+  .dep-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .dep-card { border-radius: 14px; border: 1px solid var(--border); overflow: hidden; background: var(--surface2); }
+  .dep-header { padding: 12px 16px; font-size: 13px; font-weight: 700; border-bottom: 1px solid var(--border); font-family: var(--mono); }
+  .dep-body { padding: 14px 16px; font-size: 12.5px; color: var(--muted); line-height: 1.8; }
+  .dep-card.indep .dep-header { background: var(--green-dim);  color: var(--green); }
+  .dep-card.dep   .dep-header { background: var(--red-dim);    color: var(--red); }
+  .dep-card.raw   .dep-header { background: var(--amber-dim);  color: var(--amber); }
+  .dep-card.war   .dep-header { background: var(--purple-dim); color: var(--purple); }
+  .mono-chip {
+    font-family: var(--mono); background: var(--surface); padding: 2px 6px; border-radius: 5px;
+    font-size: 11px; border: 1px solid var(--border2); color: var(--text); display: inline-block; margin: 2px 0;
+  }
+
+  /* CHIP TABLE */
+  .chip-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+  .chip-table th {
+    padding: 10px 14px; font-family: var(--mono); font-size: 10px; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+    text-align: left; border-bottom: 1px solid var(--border2);
+  }
+  .chip-table td {
+    padding: 10px 14px; font-size: 12.5px; border-bottom: 1px solid var(--border);
+    vertical-align: middle; color: var(--muted);
+  }
+  .chip-table tr:last-child td { border-bottom: none; }
+  .chip-table td:first-child { font-weight: 700; color: var(--text); font-family: var(--mono); font-size: 12px; }
+  .ipc-bar { height: 14px; border-radius: 4px; background: var(--blue); display: inline-block; min-width: 4px; box-shadow: 0 0 10px var(--blue-dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Execução Superscalar — Dispatch e IPC</h1>
+
+  <div class="tabs">
+    <div class="tab active" id="t-sim" onclick="setTab('sim')">Simulador de dispatch</div>
+    <div class="tab" id="t-dep" onclick="setTab('dep')">Dependências</div>
+    <div class="tab" id="t-chips" onclick="setTab('chips')">Processadores reais</div>
+  </div>
+
+  <!-- ===================== TAB 1: SIMULADOR ===================== -->
+  <div id="panel-sim">
+
+    <div class="card">
+      <div class="card-note">Simulando despacho superscalar largura-4. O scheduler analisa dependências e emite instruções prontas para as unidades de execução em paralelo.</div>
+    </div>
+
+    <div class="dispatch-layout" style="margin-bottom:16px">
+      <div class="panel">
+        <div class="panel-hdr">Fila de instruções (reorder buffer)</div>
+        <div class="panel-body"><div class="iq-list" id="iq-list"></div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-hdr">Unidades de execução</div>
+        <div class="panel-body">
+          <div class="eu-grid" id="eu-grid">
+            <div class="eu-row"><span class="eu-label">ALU 0</span><div class="eu-slot idle" id="eu-0">— idle</div></div>
+            <div class="eu-row"><span class="eu-label">ALU 1</span><div class="eu-slot idle" id="eu-1">— idle</div></div>
+            <div class="eu-row"><span class="eu-label">MUL</span><div class="eu-slot idle" id="eu-2">— idle</div></div>
+            <div class="eu-row"><span class="eu-label">Load/Store</span><div class="eu-slot idle" id="eu-3">— idle</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Estatísticas</div>
+      <div class="stat-row" id="stat-row">
+        <div class="stat"><div class="stat-label">Ciclo</div><div class="stat-val" id="sv-cycle">0</div></div>
+        <div class="stat"><div class="stat-label">Instr. emitidas</div><div class="stat-val good" id="sv-issued">0</div></div>
+        <div class="stat"><div class="stat-label">IPC (instr/ciclo)</div><div class="stat-val mid" id="sv-ipc">—</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Ciclos</div>
+      <div class="sn-grid" id="sn-grid"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">O que está acontecendo</div>
+      <div class="detail-box" id="detail-box">Clique em "Próximo ciclo" para simular o despacho de instruções pelo scheduler superscalar.</div>
+    </div>
+
+    <div class="card">
+      <div class="btn-row">
+        <button class="step-btn" id="btn-next" onclick="stepSim()">Próximo ciclo ›</button>
+        <button onclick="resetSim()">Reiniciar</button>
+        <span class="cycle-counter" id="sim-ctr">Ciclo <span>0</span> de 5</span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:0">
+      <div class="card-note">O superscalar ideal emitiria 4 instruções/ciclo aqui. Na prática, dependências de dados reduzem o IPC real. O scheduler tenta preencher os ciclos com instruções independentes — às vezes de ordens diferentes no código (out-of-order execution).</div>
+    </div>
+
+  </div>
+
+  <!-- ===================== TAB 2: DEPENDÊNCIAS ===================== -->
+  <div id="panel-dep" style="display:none">
+    <div class="card">
+      <div class="dep-grid">
+        <div class="dep-card indep">
+          <div class="dep-header">✅ Instruções independentes</div>
+          <div class="dep-body">
+            Podem executar em paralelo sem restrições. O scheduler despacha todas no mesmo ciclo para unidades diferentes.<br><br>
+            <span class="mono-chip">ADD X0, X1, X2</span><br>
+            <span class="mono-chip">MUL X3, X4, X5</span><br>
+            <span class="mono-chip">LDR X6, [X7]</span><br><br>
+            Nenhuma usa o resultado da outra → 3 unidades, 1 ciclo, 3× throughput.
+          </div>
+        </div>
+        <div class="dep-card dep">
+          <div class="dep-header">❌ Cadeia de dependências</div>
+          <div class="dep-body">
+            Cada instrução depende do resultado da anterior — execução necessariamente serial.<br><br>
+            <span class="mono-chip">ADD X0, X1, X2</span> → produz X0<br>
+            <span class="mono-chip">MUL X3, X0, X4</span> → precisa X0<br>
+            <span class="mono-chip">SUB X5, X3, X1</span> → precisa X3<br><br>
+            Latência total = soma das latências individuais. IPC ≈ 1 mesmo num superscalar de largura 8.
+          </div>
+        </div>
+        <div class="dep-card raw">
+          <div class="dep-header">⚠️ RAW — Read After Write</div>
+          <div class="dep-body">
+            A dependência mais comum e real. I2 lê um registrador que I1 ainda não terminou de escrever.<br><br>
+            <span class="mono-chip">ADD X0, X1, X2</span> ← escreve X0 (3 ciclos)<br>
+            <span class="mono-chip">SUB X3, X0, X4</span> ← lê X0 — precisa esperar<br><br>
+            Solução: forwarding (bypass do resultado direto da ULA), register renaming, ou reordenamento — executar outra instrução independente enquanto espera.
+          </div>
+        </div>
+        <div class="dep-card war">
+          <div class="dep-header">🔄 WAR/WAW — falsas dependências</div>
+          <div class="dep-body">
+            WAR (Write After Read): I2 escreve num reg que I1 ainda está lendo. WAW (Write After Write): duas instruções escrevem no mesmo reg.<br><br>
+            Solução: <b>register renaming</b>. O processador renomeia o registrador físico — X0 lógico vira r47 físico para I1 e r83 físico para I2. As "dependências" desaparecem porque na verdade são registradores físicos diferentes.<br><br>
+            x86 tem 16 regs lógicos mas ~200 registradores físicos internamente.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:0">
+      <div class="card-note">Register renaming é o que torna out-of-order execution possível em larga escala. Sem ele, qualquer WAR ou WAW forçaria o processador a serializar. Com renaming, o único impedimento real é RAW — e forwarding resolve a maioria dos casos. O ROB (Reorder Buffer) mantém o mapeamento lógico→físico e garante que os resultados são commitados em ordem para o estado arquitetural.</div>
+    </div>
+  </div>
+
+  <!-- ===================== TAB 3: PROCESSADORES REAIS ===================== -->
+  <div id="panel-chips" style="display:none">
+    <div class="card">
+      <div class="card-label">Largura de decode e IPC ao longo do tempo</div>
+      <table class="chip-table">
+        <tr><th>Processador</th><th>Decode width</th><th>IPC máximo</th><th>IPC real típico</th><th>ROB size</th></tr>
+        <tr><td>Intel 486 (1989)</td><td>1</td><td>1</td><td><span class="ipc-bar" style="width:8%"></span> ~0.8</td><td>—</td></tr>
+        <tr><td>Intel Pentium (1993)</td><td>2</td><td>2</td><td><span class="ipc-bar" style="width:23%"></span> ~1.5</td><td>—</td></tr>
+        <tr><td>Intel Core 2 (2006)</td><td>4</td><td>4</td><td><span class="ipc-bar" style="width:38%"></span> ~2.5</td><td>96</td></tr>
+        <tr><td>Intel Skylake (2015)</td><td>4</td><td>4</td><td><span class="ipc-bar" style="width:54%"></span> ~3.5</td><td>224</td></tr>
+        <tr><td>AMD Zen 4 (2022)</td><td>4→8 (renaming)</td><td>6</td><td><span class="ipc-bar" style="width:69%"></span> ~4.5</td><td>320</td></tr>
+        <tr><td>Intel Raptor Lake (2022)</td><td>6</td><td>6</td><td><span class="ipc-bar" style="width:74%"></span> ~4.8</td><td>512</td></tr>
+        <tr><td>Apple M1 (2020)</td><td>8</td><td>8</td><td><span class="ipc-bar" style="width:85%"></span> ~5.5</td><td>630</td></tr>
+        <tr><td>Apple M4 (2024)</td><td>9</td><td>9</td><td><span class="ipc-bar" style="width:100%"></span> ~6.5</td><td>~700</td></tr>
+      </table>
+    </div>
+
+    <div class="card" style="margin-bottom:0">
+      <div class="card-note">O Apple M4 com decode width 9 e ROB de ~700 entradas é o processador superscalar de maior largura disponível ao consumidor. O ROB enorme permite que o processador "veja" centenas de instruções à frente, encontrando paralelismo mesmo em código sequencial. A razão x86 não vai além de 6: o decodificador de instruções de tamanho variável é o gargalo — decodificar 8+ instruções x86 em paralelo exigiria área de silício proibitiva.</div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ===================== TABS ===================== */
+function setTab(t) {
+  ['sim','dep','chips'].forEach(k => {
+    document.getElementById('panel-'+k).style.display = k===t ? '' : 'none';
+    document.getElementById('t-'+k).className = 'tab' + (k===t ? ' active' : '');
+  });
+}
+
+/* ===================== SIMULATOR ===================== */
+const INSTRS = [
+  {id:0,asm:'ADD X0, X1, X2',  dep:[]},
+  {id:1,asm:'MUL X3, X4, X5',  dep:[]},
+  {id:2,asm:'LDR X6, [X7]',    dep:[]},
+  {id:3,asm:'SUB X8, X0, X3',  dep:[0,1]},
+  {id:4,asm:'ADD X9, X6, X1',  dep:[2]},
+  {id:5,asm:'STR X8, [X9]',    dep:[3,4]},
+  {id:6,asm:'MUL X10, X8, X9', dep:[3,4]},
+  {id:7,asm:'ADD X11, X10, X1',dep:[6]},
+];
+
+const CYCLES = [
+  {issued:[0,1,2],         blocked:[3,4,5,6,7], euBusy:['ADD X0,X1,X2','MUL X3,X4,X5','LDR X6,[X7]','—'],
+   ipc:3, detail:'Ciclo 1: o scheduler analisa as 8 instruções. I0, I1, I2 são independentes — nenhuma depende do resultado das outras. As 3 unidades disponíveis (ALU0, MUL, L/S) são preenchidas simultaneamente. ALU1 fica idle porque não há uma 4ª instrução independente disponível ainda. IPC=3 neste ciclo.'},
+  {issued:[0,1,2,3,4],     blocked:[5,6,7],     euBusy:['ADD X9,X6,X1','—','—','—'],
+   ipc:1, detail:'Ciclo 2: I0, I1, I2 completaram. I3 precisava de X0 (de I0) e X3 (de I1) — ambos agora disponíveis, mas o scheduler perdeu 1 ciclo esperando MUL completar (latência 3 ciclos no exemplo). I4 precisava de X6 (de I2, latência de load ~4 ciclos) — ainda bloqueado. Só I4 está pronto aqui. IPC=1 — gargalo de dependência.'},
+  {issued:[0,1,2,3,4],     blocked:[5,6,7],     euBusy:['SUB X8,X0,X3','—','—','—'],
+   ipc:1, detail:'Ciclo 3: I3 (SUB X8, X0, X3) finalmente executa — tinha todos os operandos. I4 (ADD X9, X6, X1) ainda espera o load de X6 completar (loads têm latência de cache L1 ~4 ciclos). I5, I6, I7 dependem de X8 e/ou X9 que ainda não estão prontos. IPC=1 — a cadeia de dependências está dominando.'},
+  {issued:[0,1,2,3,4,5,6], blocked:[7],         euBusy:['ADD X9,X6,X1','MUL X10,X8,X9','STR X8,[X9]','—'],
+   ipc:3, detail:'Ciclo 4: X6 finalmente disponível → I4 executa. X8 disponível (de I3) → I5 e I6 podem executar em paralelo (STR e MUL são unidades diferentes). 3 instruções em paralelo de novo! O scheduler encontrou paralelismo mesmo com todas as dependências. IPC=3 neste ciclo.'},
+  {issued:[0,1,2,3,4,5,6,7], blocked:[],        euBusy:['ADD X11,X10,X1','—','—','—'],
+   ipc:1, detail:'Ciclo 5: I7 (ADD X11, X10, X1) executa — precisava de X10 que I6 acabou de produzir. Todas as 8 instruções concluídas em 5 ciclos. IPC médio = 8 instruções / 5 ciclos = 1.6 — bem abaixo do máximo teórico de 4. As dependências em cadeia foram o limitante principal. Um compilador otimizador tentaria reordenar o código para expor mais paralelismo.'},
+];
+
+const STEP_NODES = [
+  {name:'Ciclo 1', sub:'3 paralelas'},
+  {name:'Ciclo 2', sub:'stall RAW'},
+  {name:'Ciclo 3', sub:'stall load'},
+  {name:'Ciclo 4', sub:'3 paralelas'},
+  {name:'Ciclo 5', sub:'finaliza'},
+];
+
+let si = -1;
+
+function renderNodes() {
+  document.getElementById('sn-grid').innerHTML = STEP_NODES.map((s,i) => `
+    <div class="sn${i<si?' done':i===si?' active':''}">
+      <div class="sn-n">${String(i+1).padStart(2,'0')}</div>
+      <div class="sn-name">${s.name}</div>
+      <div class="sn-sub">${s.sub}</div>
+    </div>`).join('');
+}
+
+function renderIQ(cycle) {
+  const issued = cycle ? new Set(cycle.issued) : new Set();
+  const blocked = cycle ? new Set(cycle.blocked) : new Set();
+  document.getElementById('iq-list').innerHTML = INSTRS.map(ins => {
+    let cls='', status='', statusCls='';
+    if (blocked.has(ins.id)) { cls='blocked'; status='bloqueada'; statusCls='status-blocked'; }
+    else if (issued.has(ins.id)) { cls='dispatched'; status='emitida'; statusCls='status-dispatched'; }
+    else if (cycle) { cls='ready'; status='pronta'; statusCls='status-ready'; }
+    const depStr = ins.dep.length ? 'dep: I' + ins.dep.join(', I') : '';
+    return `<div class="iq-item ${cls}">
+      <span class="iq-instr">I${ins.id}: ${ins.asm}</span>
+      <span style="display:flex;gap:8px;align-items:center">
+        <span class="iq-dep">${depStr}</span>
+        ${status?`<span class="iq-status ${statusCls}">${status}</span>`:''}
+      </span>
+    </div>`;
+  }).join('');
+}
+
+function renderEUs(cycle) {
+  const busy = cycle ? cycle.euBusy : ['—','—','—','—'];
+  [0,1,2,3].forEach(i => {
+    const el = document.getElementById('eu-'+i);
+    const v = busy[i] || '—';
+    el.textContent = v==='—' ? '— idle' : v;
+    el.className = 'eu-slot ' + (v==='—' ? 'idle' : 'busy');
+  });
+}
+
+function renderStats(cycle) {
+  const totalIssued = cycle ? cycle.issued.length : 0;
+  const ipc = si>=0 ? (CYCLES.slice(0,si+1).reduce((a,c)=>a+c.ipc,0)/(si+1)).toFixed(2) : '—';
+  document.getElementById('sv-cycle').textContent = si>=0 ? si+1 : 0;
+  document.getElementById('sv-issued').textContent = totalIssued;
+  document.getElementById('sv-ipc').textContent = ipc;
+  const ipcEl = document.getElementById('sv-ipc');
+  if (ipc >= 3.0) ipcEl.className = 'stat-val good';
+  else if (ipc >= 1.5) ipcEl.className = 'stat-val mid';
+  else ipcEl.className = 'stat-val';
+}
+
+function stepSim() {
+  if (si >= CYCLES.length-1) return;
+  si++;
+  renderNodes();
+  const c = CYCLES[si];
+  renderIQ(c);
+  renderEUs(c);
+  renderStats(c);
+  const db = document.getElementById('detail-box');
+  db.textContent = c.detail;
+  db.className = 'detail-box active';
+  document.getElementById('sim-ctr').innerHTML = 'Ciclo <span>' + (si+1) + '</span> de ' + CYCLES.length;
+  if (si >= CYCLES.length-1) {
+    document.getElementById('btn-next').textContent = 'Concluído';
+    document.getElementById('btn-next').disabled = true;
+  }
+}
+
+function resetSim() {
+  si = -1;
+  renderNodes();
+  renderIQ(null);
+  renderEUs(null);
+  renderStats(null);
+  const db = document.getElementById('detail-box');
+  db.textContent = 'Clique em "Próximo ciclo" para simular o despacho de instruções pelo scheduler superscalar.';
+  db.className = 'detail-box';
+  document.getElementById('sim-ctr').innerHTML = 'Ciclo <span>0</span> de ' + CYCLES.length;
+  document.getElementById('btn-next').textContent = 'Próximo ciclo ›';
+  document.getElementById('btn-next').disabled = false;
+}
+
+renderNodes();
+renderIQ(null);
+renderEUs(null);
+renderStats(null);
+</script>
+</body>
+</html>
